@@ -28,36 +28,17 @@ th { background: #edebe9; text-align: left; padding: 6px 10px; border-bottom: 2p
 td { padding: 5px 10px; border-bottom: 1px solid #edebe9; vertical-align: top; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 tr:hover td { background: #faf9f8; }
 #count { font-size: 12px; color: #605e5c; margin-bottom: 6px; }
-.config-warn { font-size: 12px; color: #a4262c; margin-top: 4px; display: none; }
 </style>
 </head>
 <body>
 <h1>Test SP + MSAL — Parte Diario Telice</h1>
 <p class="sub">Autentica con tu cuenta de Microsoft 365 y consulta listas de SharePoint.</p>
 
-<!-- CONFIG -->
-<div class="card">
-  <h2 style="font-size:14px;font-weight:600;margin-bottom:12px">Configuracion (rellenar una vez)</h2>
-  <div class="row">
-    <label>Client ID:</label>
-    <input id="clientId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" oninput="guardarConfig()">
-  </div>
-  <div class="row">
-    <label>Tenant ID:</label>
-    <input id="tenantId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" oninput="guardarConfig()">
-  </div>
-  <div class="row">
-    <label>Site URL:</label>
-    <input id="siteUrl" value="https://telice.sharepoint.com/sites/APPS_TEST_1" oninput="guardarConfig()">
-  </div>
-  <p class="config-warn" id="configWarn">Rellena Client ID y Tenant ID antes de continuar.</p>
-</div>
-
 <!-- AUTH -->
 <div class="card">
   <div class="row">
-    <button class="btn-login"   id="btnLogin"  onclick="login()"  >Iniciar sesion</button>
-    <button class="btn-logout"  id="btnLogout" onclick="logout()" style="display:none">Cerrar sesion</button>
+    <button class="btn-login"  id="btnLogin"  onclick="login()"  disabled>Iniciando...</button>
+    <button class="btn-logout" id="btnLogout" onclick="logout()" style="display:none">Cerrar sesion</button>
     <span id="userBox"></span>
   </div>
   <div id="statusBar"></div>
@@ -68,101 +49,55 @@ tr:hover td { background: #faf9f8; }
   <div class="row">
     <label>Lista SP:</label>
     <input id="listName" value="Personal_Maestro">
-    <button class="btn-fetch" id="btnFetch" onclick="fetchLista()" disabled>Cargar lista</button>
+    <button class="btn-fetch"  id="btnFetch"  onclick="fetchLista()" disabled>Cargar lista</button>
     <button class="btn-neutral" onclick="clearTabla()">Limpiar</button>
   </div>
   <div id="count"></div>
   <div id="tabla"></div>
 </div>
 
-<!-- MSAL CDN (jsDelivr, mas fiable que alcdn.msauth.net) -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2/lib/msal-browser.js"
-  onerror="this.onerror=null;this.src='https://unpkg.com/@azure/msal-browser@2/lib/msal-browser.js'"
-  onload="document.getElementById('msalErr').style.display='none'"></script>
-<div id="msalErr" style="display:none;padding:16px;background:#fde7e9;color:#c50f1f;font-family:Segoe UI;font-size:13px;border-radius:4px;margin:20px">
-  Error: no se pudo cargar MSAL desde <code>alcdn.msauth.net</code>.
-  Verifica que el equipo tiene acceso a internet y que no hay un proxy bloqueando ese dominio.
-</div>
+  onerror="this.onerror=null;this.src='https://unpkg.com/@azure/msal-browser@2/lib/msal-browser.js'"></script>
 <script>
-// ── CONFIG PERSISTIDA EN localStorage ────────────────────────────────────────
-var CFG_KEY = 'test_sp_msal_config';
+var _cfg  = null;   // cargado desde config.json
+var _msal = null;   // instancia MSAL
 
-function cargarConfig() {
-  try {
-    var c = JSON.parse(localStorage.getItem(CFG_KEY) || '{}');
-    if (c.clientId) document.getElementById('clientId').value = c.clientId;
-    if (c.tenantId) document.getElementById('tenantId').value = c.tenantId;
-    if (c.siteUrl)  document.getElementById('siteUrl').value  = c.siteUrl;
-  } catch(e) {}
+// ── CARGAR config.json ────────────────────────────────────────────────────────
+async function loadConfig() {
+  var base = window.location.pathname.replace(/\/[^/]*$/, '/');
+  var url  = window.location.origin + base + 'config.json';
+  var res  = await fetch(url);
+  if (!res.ok) throw new Error('config.json no encontrado en ' + url);
+  var cfg = await res.json();
+  if (!cfg.clientId || !cfg.tenantId || !cfg.siteUrl) {
+    throw new Error('config.json incompleto (necesita clientId, tenantId, siteUrl)');
+  }
+  return cfg;
 }
 
-function guardarConfig() {
-  localStorage.setItem(CFG_KEY, JSON.stringify({
-    clientId: document.getElementById('clientId').value.trim(),
-    tenantId: document.getElementById('tenantId').value.trim(),
-    siteUrl:  document.getElementById('siteUrl').value.trim()
-  }));
-}
-
-cargarConfig();
-
-// ── MSAL ─────────────────────────────────────────────────────────────────────
-var _msal = null;
-
-function getMsal() {
-  var clientId = document.getElementById('clientId').value.trim();
-  var tenantId = document.getElementById('tenantId').value.trim();
-
-  if (!clientId || !tenantId) {
-    document.getElementById('configWarn').style.display = 'block';
-    return null;
-  }
-  document.getElementById('configWarn').style.display = 'none';
-
-  // Recrear si cambio config
-  if (!_msal || _msal._clientId !== clientId) {
-    _msal = new msal.PublicClientApplication({
-      auth: {
-        clientId: clientId,
-        authority: 'https://login.microsoftonline.com/' + tenantId,
-        redirectUri: window.location.origin + window.location.pathname
-      },
-      cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
-    });
-    _msal._clientId = clientId;
-  }
-  return _msal;
+// ── MSAL ──────────────────────────────────────────────────────────────────────
+function initMsal(cfg) {
+  _msal = new msal.PublicClientApplication({
+    auth: {
+      clientId:    cfg.clientId,
+      authority:   'https://login.microsoftonline.com/' + cfg.tenantId,
+      redirectUri: window.location.origin + window.location.pathname
+    },
+    cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
+  });
 }
 
 function getScopes() {
-  var site = document.getElementById('siteUrl').value.trim();
-  var origin = new URL(site).origin; // https://telice.sharepoint.com
-  return [origin + '/AllSites.Read'];
+  return [new URL(_cfg.siteUrl).origin + '/AllSites.Read'];
 }
 
 // ── AUTH ──────────────────────────────────────────────────────────────────────
 async function login() {
-  var instance = getMsal();
-  if (!instance) return;
-
   setStatus('Abriendo ventana de login...', 'info');
   try {
-    // Intentar silent primero
-    var accounts = instance.getAllAccounts();
-    if (accounts.length > 0) {
-      var silentResult = await instance.acquireTokenSilent({
-        scopes: getScopes(),
-        account: accounts[0]
-      });
-      mostrarUsuario(silentResult.account);
-      setStatus('Sesion recuperada de cache', 'ok');
-      document.getElementById('btnFetch').disabled = false;
-      return;
-    }
-    // Si no hay cuenta, popup
-    var result = await instance.loginPopup({ scopes: getScopes() });
+    var result = await _msal.loginPopup({ scopes: getScopes() });
     mostrarUsuario(result.account);
-    setStatus('Login correcto: ' + result.account.username, 'ok');
+    setStatus('Login correcto', 'ok');
     document.getElementById('btnFetch').disabled = false;
   } catch(e) {
     setStatus('Error login: ' + e.message, 'err');
@@ -170,13 +105,9 @@ async function login() {
 }
 
 function logout() {
-  var instance = getMsal();
-  if (!instance) return;
-  var accounts = instance.getAllAccounts();
-  if (accounts.length > 0) {
-    instance.logoutPopup({ account: accounts[0] });
-  }
-  document.getElementById('userBox').style.display = 'none';
+  var accounts = _msal.getAllAccounts();
+  if (accounts.length) _msal.logoutPopup({ account: accounts[0] });
+  document.getElementById('userBox').style.display  = 'none';
   document.getElementById('btnLogout').style.display = 'none';
   document.getElementById('btnLogin').style.display  = '';
   document.getElementById('btnFetch').disabled = true;
@@ -191,39 +122,32 @@ function mostrarUsuario(account) {
   document.getElementById('btnLogout').style.display = '';
 }
 
-// ── FETCH LISTA SP ────────────────────────────────────────────────────────────
+async function getToken() {
+  var accounts = _msal.getAllAccounts();
+  if (!accounts.length) throw new Error('Sin sesion activa');
+  try {
+    var r = await _msal.acquireTokenSilent({ scopes: getScopes(), account: accounts[0] });
+    return r.accessToken;
+  } catch(e) {
+    var r2 = await _msal.acquireTokenPopup({ scopes: getScopes() });
+    return r2.accessToken;
+  }
+}
+
+// ── FETCH LISTA SP ─────────────────────────────────────────────────────────────
 async function fetchLista() {
-  var instance = getMsal();
-  if (!instance) return;
-
   var listName = document.getElementById('listName').value.trim();
-  var siteUrl  = document.getElementById('siteUrl').value.trim().replace(/\/$/, '');
-
   if (!listName) { setStatus('Introduce el nombre de la lista', 'err'); return; }
-
   setStatus('Obteniendo token...', 'info');
 
   var token;
-  try {
-    var accounts = instance.getAllAccounts();
-    if (!accounts.length) { setStatus('Inicia sesion primero', 'err'); return; }
-    var r = await instance.acquireTokenSilent({ scopes: getScopes(), account: accounts[0] });
-    token = r.accessToken;
-  } catch(e) {
-    // silent fallo, intentar popup
-    try {
-      var r2 = await instance.acquireTokenPopup({ scopes: getScopes() });
-      token = r2.accessToken;
-    } catch(e2) {
-      setStatus('No se pudo obtener token: ' + e2.message, 'err');
-      return;
-    }
-  }
+  try { token = await getToken(); }
+  catch(e) { setStatus('No se pudo obtener token: ' + e.message, 'err'); return; }
 
-  setStatus('Consultando lista "' + listName + '"...', 'info');
-
+  setStatus('Consultando "' + listName + '"...', 'info');
   try {
-    var url = siteUrl + "/_api/web/lists/GetByTitle('" + listName.replace(/'/g,"''") + "')/items?$top=500";
+    var url = _cfg.siteUrl.replace(/\/$/, '') +
+              "/_api/web/lists/GetByTitle('" + listName.replace(/'/g,"''") + "')/items?$top=500";
     var res = await fetch(url, {
       headers: {
         'Authorization': 'Bearer ' + token,
@@ -233,11 +157,11 @@ async function fetchLista() {
     if (!res.ok) {
       var txt = await res.text();
       var msg = '';
-      try { msg = JSON.parse(txt).error.message.value; } catch(e) { msg = txt.slice(0,300); }
+      try { msg = JSON.parse(txt).error.message.value; } catch(e2) { msg = txt.slice(0,300); }
       setStatus('HTTP ' + res.status + ': ' + msg, 'err');
       return;
     }
-    var data = await res.json();
+    var data  = await res.json();
     var items = data.value || [];
     setStatus(items.length + ' elementos cargados de "' + listName + '"', 'ok');
     renderTabla(items);
@@ -246,6 +170,7 @@ async function fetchLista() {
   }
 }
 
+// ── TABLA ─────────────────────────────────────────────────────────────────────
 function renderTabla(items) {
   if (!items.length) {
     document.getElementById('count').textContent = 'Lista vacia.';
@@ -253,21 +178,20 @@ function renderTabla(items) {
     return;
   }
   var SKIP = new Set(['odata.etag','odata.type','odata.id','odata.editLink',
-                      'FileSystemObjectType','ServerRedirectedEmbedUri','ServerRedirectedEmbedUrl',
-                      'ContentTypeId','ComplianceAssetId','GUID']);
+    'FileSystemObjectType','ServerRedirectedEmbedUri','ServerRedirectedEmbedUrl',
+    'ContentTypeId','ComplianceAssetId','GUID']);
   var cols = Object.keys(items[0]).filter(function(k) {
     return !SKIP.has(k) && !k.startsWith('@') && !k.endsWith('StringId') && k !== 'EditorId' && k !== 'AuthorId';
   }).slice(0, 15);
 
   document.getElementById('count').textContent = items.length + ' elementos — columnas: ' + cols.join(', ');
-
   var html = '<table><thead><tr>' + cols.map(function(c){ return '<th>' + c + '</th>'; }).join('') + '</tr></thead><tbody>';
   items.forEach(function(it) {
     html += '<tr>' + cols.map(function(c) {
       var v = it[c];
       if (v === null || v === undefined) return '<td style="color:#aaa">—</td>';
       if (typeof v === 'object') v = JSON.stringify(v);
-      return '<td title="' + String(v).replace(/"/g,'&quot;') + '">' + String(v).slice(0, 60) + '</td>';
+      return '<td title="' + String(v).replace(/"/g,'&quot;') + '">' + String(v).slice(0,60) + '</td>';
     }).join('') + '</tr>';
   });
   html += '</tbody></table>';
@@ -277,7 +201,7 @@ function renderTabla(items) {
 function clearTabla() {
   document.getElementById('tabla').innerHTML = '';
   document.getElementById('count').textContent = '';
-  setStatus('', 'info');
+  setStatus('', '');
 }
 
 function setStatus(msg, cls) {
@@ -288,19 +212,30 @@ function setStatus(msg, cls) {
   el.style.display = 'block';
 }
 
-// Auto-login silencioso si ya hay sesion en cache
+// ── INIT ──────────────────────────────────────────────────────────────────────
 window.addEventListener('load', async function() {
-  var instance = getMsal();
-  if (!instance) return;
-  if (typeof instance.initialize === 'function') await instance.initialize();
-  var accounts = instance.getAllAccounts();
-  if (accounts.length > 0) {
-    try {
-      var r = await instance.acquireTokenSilent({ scopes: getScopes(), account: accounts[0] });
-      mostrarUsuario(r.account);
-      setStatus('Sesion activa: ' + r.account.username, 'ok');
-      document.getElementById('btnFetch').disabled = false;
-    } catch(e) { /* sesion caducada, el usuario hace login manual */ }
+  var btn = document.getElementById('btnLogin');
+  try {
+    _cfg = await loadConfig();
+    initMsal(_cfg);
+    if (typeof _msal.initialize === 'function') await _msal.initialize();
+
+    // Intentar login silencioso (sesion en cache)
+    var accounts = _msal.getAllAccounts();
+    if (accounts.length > 0) {
+      try {
+        var r = await _msal.acquireTokenSilent({ scopes: getScopes(), account: accounts[0] });
+        mostrarUsuario(r.account);
+        setStatus('Sesion activa: ' + r.account.username, 'ok');
+        document.getElementById('btnFetch').disabled = false;
+        return;
+      } catch(e) { /* token caducado, pedimos login */ }
+    }
+    btn.textContent = 'Iniciar sesion';
+    btn.disabled = false;
+  } catch(e) {
+    setStatus('Error al inicializar: ' + e.message, 'err');
+    btn.textContent = 'Error (ver status)';
   }
 });
 </script>

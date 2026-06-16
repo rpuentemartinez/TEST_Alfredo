@@ -75,8 +75,16 @@ tr:hover td { background: #faf9f8; }
   <div id="tabla"></div>
 </div>
 
-<!-- MSAL CDN -->
-<script src="https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js"></script>
+<!-- MSAL CDN (jsDelivr, mas fiable que alcdn.msauth.net) -->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2/dist/browser/msal-browser.min.js"></script>
+<script>
+// Verificar que MSAL cargo
+window.addEventListener('error', function(e) {
+  if (e.filename && e.filename.includes('msal')) {
+    document.body.innerHTML = '<div style="padding:24px;color:#c50f1f;font-family:Segoe UI">Error al cargar MSAL desde CDN. Verifica la conexion a internet.</div>';
+  }
+}, true);
+</script>
 <script>
 // ── CONFIG PERSISTIDA EN localStorage ────────────────────────────────────────
 var CFG_KEY = 'test_sp_msal_config';
@@ -286,7 +294,7 @@ function setStatus(msg, cls) {
 window.addEventListener('load', async function() {
   var instance = getMsal();
   if (!instance) return;
-  await instance.initialize();
+  if (typeof instance.initialize === 'function') await instance.initialize();
   var accounts = instance.getAllAccounts();
   if (accounts.length > 0) {
     try {

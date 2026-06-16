@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Test SP + MSAL</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: Segoe UI, sans-serif; margin: 0; padding: 24px; background: #f3f2f1; }
+h1  { font-size: 18px; margin-bottom: 4px; }
+.sub { font-size: 13px; color: #605e5c; margin-bottom: 20px; }
+.card { background: #fff; border-radius: 6px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+input  { padding: 6px 10px; border: 1px solid #8a8886; border-radius: 3px; font-size: 13px; flex: 1; min-width: 200px; }
+label  { font-size: 13px; white-space: nowrap; min-width: 100px; }
+button { padding: 7px 16px; border: none; border-radius: 3px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.btn-login   { background: #0078d4; color: #fff; }
+.btn-fetch   { background: #107c10; color: #fff; }
+.btn-logout  { background: #a4262c; color: #fff; }
+.btn-neutral { background: #edebe9; color: #323130; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+#statusBar { font-size: 13px; padding: 8px 12px; border-radius: 3px; margin-bottom: 10px; display: none; }
+.ok   { background: #dff6dd; color: #107c10; }
+.err  { background: #fde7e9; color: #c50f1f; }
+.info { background: #deecf9; color: #005a9e; }
+#userBox { font-size: 13px; color: #323130; padding: 6px 10px; background: #edebe9; border-radius: 3px; display: none; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+th { background: #edebe9; text-align: left; padding: 6px 10px; border-bottom: 2px solid #c8c6c4; }
+td { padding: 5px 10px; border-bottom: 1px solid #edebe9; vertical-align: top; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tr:hover td { background: #faf9f8; }
+#count { font-size: 12px; color: #605e5c; margin-bottom: 6px; }
+.config-warn { font-size: 12px; color: #a4262c; margin-top: 4px; display: none; }
+</style>
+</head>
+<body>
+<h1>Test SP + MSAL — Parte Diario Telice</h1>
+<p class="sub">Autentica con tu cuenta de Microsoft 365 y consulta listas de SharePoint.</p>
+
+<!-- CONFIG -->
+<div class="card">
+  <h2 style="font-size:14px;font-weight:600;margin-bottom:12px">Configuracion (rellenar una vez)</h2>
+  <div class="row">
+    <label>Client ID:</label>
+    <input id="clientId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" oninput="guardarConfig()">
+  </div>
+  <div class="row">
+    <label>Tenant ID:</label>
+    <input id="tenantId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" oninput="guardarConfig()">
+  </div>
+  <div class="row">
+    <label>Site URL:</label>
+    <input id="siteUrl" value="https://telice.sharepoint.com/sites/APPS_TEST_1" oninput="guardarConfig()">
+  </div>
+  <p class="config-warn" id="configWarn">Rellena Client ID y Tenant ID antes de continuar.</p>
+</div>
+
+<!-- AUTH -->
+<div class="card">
+  <div class="row">
+    <button class="btn-login"   id="btnLogin"  onclick="login()"  >Iniciar sesion</button>
+    <button class="btn-logout"  id="btnLogout" onclick="logout()" style="display:none">Cerrar sesion</button>
+    <span id="userBox"></span>
+  </div>
+  <div id="statusBar"></div>
+</div>
+
+<!-- FETCH -->
+<div class="card">
+  <div class="row">
+    <label>Lista SP:</label>
+    <input id="listName" value="Personal_Maestro">
+    <button class="btn-fetch" id="btnFetch" onclick="fetchLista()" disabled>Cargar lista</button>
+    <button class="btn-neutral" onclick="clearTabla()">Limpiar</button>
+  </div>
+  <div id="count"></div>
+  <div id="tabla"></div>
+</div>
+
+<!-- MSAL CDN -->
+<script src="https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js"></script>
+<script>
+// ── CONFIG PERSISTIDA EN localStorage ────────────────────────────────────────
+var CFG_KEY = 'test_sp_msal_config';
+
+function cargarConfig() {
+  try {
+    var c = JSON.parse(localStorage.getItem(CFG_KEY) || '{}');
+    if (c.clientId) document.getElementById('clientId').value = c.clientId;
+    if (c.tenantId) document.getElementById('tenantId').value = c.tenantId;
+    if (c.siteUrl)  document.getElementById('siteUrl').value  = c.siteUrl;
+  } catch(e) {}
+}
+
+function guardarConfig() {
+  localStorage.setItem(CFG_KEY, JSON.stringify({
+    clientId: document.getElementById('clientId').value.trim(),
+    tenantId: document.getElementById('tenantId').value.trim(),
+    siteUrl:  document.getElementById('siteUrl').value.trim()
+  }));
+}
+
+cargarConfig();
+
+// ── MSAL ─────────────────────────────────────────────────────────────────────
+var _msal = null;
+
+function getMsal() {
+  var clientId = document.getElementById('clientId').value.trim();
+  var tenantId = document.getElementById('tenantId').value.trim();
+
+  if (!clientId || !tenantId) {
+    document.getElementById('configWarn').style.display = 'block';
+    return null;
+  }
+  document.getElementById('configWarn').style.display = 'none';
+
+  // Recrear si cambio config
+  if (!_msal || _msal._clientId !== clientId) {
+    _msal = new msal.PublicClientApplication({
+      auth: {
+        clientId: clientId,
+        authority: 'https://login.microsoftonline.com/' + tenantId,
+        redirectUri: window.location.origin + window.location.pathname
+      },
+      cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
+    });
+    _msal._clientId = clientId;
+  }
+  return _msal;
+}
+
+function getScopes() {
+  var site = document.getElementById('siteUrl').value.trim();
+  var origin = new URL(site).origin; // https://telice.sharepoint.com
+  return [origin + '/AllSites.Read'];
+}
+
+// ── AUTH ──────────────────────────────────────────────────────────────────────
+async function login() {
+  var instance = getMsal();
+  if (!instance) return;
+
+  setStatus('Abriendo ventana de login...', 'info');
+  try {
+    // Intentar silent primero
+    var accounts = instance.getAllAccounts();
+    if (accounts.length > 0) {
+      var silentResult = await instance.acquireTokenSilent({
+        scopes: getScopes(),
+        account: accounts[0]
+      });
+      mostrarUsuario(silentResult.account);
+      setStatus('Sesion recuperada de cache', 'ok');
+      document.getElementById('btnFetch').disabled = false;
+      return;
+    }
+    // Si no hay cuenta, popup
+    var result = await instance.loginPopup({ scopes: getScopes() });
+    mostrarUsuario(result.account);
+    setStatus('Login correcto: ' + result.account.username, 'ok');
+    document.getElementById('btnFetch').disabled = false;
+  } catch(e) {
+    setStatus('Error login: ' + e.message, 'err');
+  }
+}
+
+function logout() {
+  var instance = getMsal();
+  if (!instance) return;
+  var accounts = instance.getAllAccounts();
+  if (accounts.length > 0) {
+    instance.logoutPopup({ account: accounts[0] });
+  }
+  document.getElementById('userBox').style.display = 'none';
+  document.getElementById('btnLogout').style.display = 'none';
+  document.getElementById('btnLogin').style.display  = '';
+  document.getElementById('btnFetch').disabled = true;
+  setStatus('Sesion cerrada', 'info');
+}
+
+function mostrarUsuario(account) {
+  var box = document.getElementById('userBox');
+  box.textContent = account.name + ' (' + account.username + ')';
+  box.style.display = 'inline-block';
+  document.getElementById('btnLogin').style.display  = 'none';
+  document.getElementById('btnLogout').style.display = '';
+}
+
+// ── FETCH LISTA SP ────────────────────────────────────────────────────────────
+async function fetchLista() {
+  var instance = getMsal();
+  if (!instance) return;
+
+  var listName = document.getElementById('listName').value.trim();
+  var siteUrl  = document.getElementById('siteUrl').value.trim().replace(/\/$/, '');
+
+  if (!listName) { setStatus('Introduce el nombre de la lista', 'err'); return; }
+
+  setStatus('Obteniendo token...', 'info');
+
+  var token;
+  try {
+    var accounts = instance.getAllAccounts();
+    if (!accounts.length) { setStatus('Inicia sesion primero', 'err'); return; }
+    var r = await instance.acquireTokenSilent({ scopes: getScopes(), account: accounts[0] });
+    token = r.accessToken;
+  } catch(e) {
+    // silent fallo, intentar popup
+    try {
+      var r2 = await instance.acquireTokenPopup({ scopes: getScopes() });
+      token = r2.accessToken;
+    } catch(e2) {
+      setStatus('No se pudo obtener token: ' + e2.message, 'err');
+      return;
+    }
+  }
+
+  setStatus('Consultando lista "' + listName + '"...', 'info');
+
+  try {
+    var url = siteUrl + "/_api/web/lists/GetByTitle('" + listName.replace(/'/g,"''") + "')/items?$top=500";
+    var res = await fetch(url, {
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Accept': 'application/json;odata=nometadata'
+      }
+    });
+    if (!res.ok) {
+      var txt = await res.text();
+      var msg = '';
+      try { msg = JSON.parse(txt).error.message.value; } catch(e) { msg = txt.slice(0,300); }
+      setStatus('HTTP ' + res.status + ': ' + msg, 'err');
+      return;
+    }
+    var data = await res.json();
+    var items = data.value || [];
+    setStatus(items.length + ' elementos cargados de "' + listName + '"', 'ok');
+    renderTabla(items);
+  } catch(e) {
+    setStatus('Fetch error: ' + e.message, 'err');
+  }
+}
+
+function renderTabla(items) {
+  if (!items.length) {
+    document.getElementById('count').textContent = 'Lista vacia.';
+    document.getElementById('tabla').innerHTML = '';
+    return;
+  }
+  var SKIP = new Set(['odata.etag','odata.type','odata.id','odata.editLink',
+                      'FileSystemObjectType','ServerRedirectedEmbedUri','ServerRedirectedEmbedUrl',
+                      'ContentTypeId','ComplianceAssetId','GUID']);
+  var cols = Object.keys(items[0]).filter(function(k) {
+    return !SKIP.has(k) && !k.startsWith('@') && !k.endsWith('StringId') && k !== 'EditorId' && k !== 'AuthorId';
+  }).slice(0, 15);
+
+  document.getElementById('count').textContent = items.length + ' elementos — columnas: ' + cols.join(', ');
+
+  var html = '<table><thead><tr>' + cols.map(function(c){ return '<th>' + c + '</th>'; }).join('') + '</tr></thead><tbody>';
+  items.forEach(function(it) {
+    html += '<tr>' + cols.map(function(c) {
+      var v = it[c];
+      if (v === null || v === undefined) return '<td style="color:#aaa">—</td>';
+      if (typeof v === 'object') v = JSON.stringify(v);
+      return '<td title="' + String(v).replace(/"/g,'&quot;') + '">' + String(v).slice(0, 60) + '</td>';
+    }).join('') + '</tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('tabla').innerHTML = html;
+}
+
+function clearTabla() {
+  document.getElementById('tabla').innerHTML = '';
+  document.getElementById('count').textContent = '';
+  setStatus('', 'info');
+}
+
+function setStatus(msg, cls) {
+  var el = document.getElementById('statusBar');
+  if (!msg) { el.style.display = 'none'; return; }
+  el.textContent = msg;
+  el.className = cls;
+  el.style.display = 'block';
+}
+
+// Auto-login silencioso si ya hay sesion en cache
+window.addEventListener('load', async function() {
+  var instance = getMsal();
+  if (!instance) return;
+  await instance.initialize();
+  var accounts = instance.getAllAccounts();
+  if (accounts.length > 0) {
+    try {
+      var r = await instance.acquireTokenSilent({ scopes: getScopes(), account: accounts[0] });
+      mostrarUsuario(r.account);
+      setStatus('Sesion activa: ' + r.account.username, 'ok');
+      document.getElementById('btnFetch').disabled = false;
+    } catch(e) { /* sesion caducada, el usuario hace login manual */ }
+  }
+});
+</script>
+</body>
+</html>

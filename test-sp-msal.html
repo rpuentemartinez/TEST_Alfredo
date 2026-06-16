@@ -76,8 +76,9 @@ tr:hover td { background: #faf9f8; }
 </div>
 
 <!-- MSAL CDN (jsDelivr, mas fiable que alcdn.msauth.net) -->
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"
-  onerror="document.getElementById('msalErr').style.display='block'"></script>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2/lib/msal-browser.js"
+  onerror="this.onerror=null;this.src='https://unpkg.com/@azure/msal-browser@2/lib/msal-browser.js'"
+  onload="document.getElementById('msalErr').style.display='none'"></script>
 <div id="msalErr" style="display:none;padding:16px;background:#fde7e9;color:#c50f1f;font-family:Segoe UI;font-size:13px;border-radius:4px;margin:20px">
   Error: no se pudo cargar MSAL desde <code>alcdn.msauth.net</code>.
   Verifica que el equipo tiene acceso a internet y que no hay un proxy bloqueando ese dominio.
